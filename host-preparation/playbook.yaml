@@ -1,0 +1,156 @@
+---
+
+- hosts: all
+  become: yes
+
+  vars_prompt:
+    - name: rhsm_username
+      private: no
+    - name: rhsm_password
+      private: yes
+    - name: rhsm_pool
+      private: no
+    - name: ocp_version
+      private: no
+    - name: is_ec2
+      private: no
+      default: n
+
+  tasks:
+    - block:
+        - name: Enable subscription-manager YUM plugin
+          lineinfile:
+            dest: /etc/yum/pluginconf.d/subscription-manager.conf
+            regexp: '^enabled='
+            line: 'enabled=1'
+          register: enable_subscription_manager_plugin
+
+        - name: Disable amazon-id YUM plugin
+          lineinfile:
+            dest: /etc/yum/pluginconf.d/amazon-id.conf
+            regexp: '^enabled='
+            line: 'enabled=0'
+          register: disable_amazon_id_plugin
+
+        - name: Disable rhui-lb YUM plugin
+          lineinfile:
+            dest: /etc/yum/pluginconf.d/rhui-lb.conf
+            regexp: '^enabled='
+            line: 'enabled=0'
+          register: disable_rhui_lb_plugin
+
+        - name: Stop choose_repo service
+          service:
+            name: choose_repo
+            state: stopped
+
+        - name: Disable choose_repo service
+          service:
+            name: choose_repo
+            enabled: no
+
+        - name: Disable all repos
+          command: 'yum-config-manager --disable \*'
+          when: >
+            enable_subscription_manager_plugin.changed
+            or disable_amazon_id_plugin.changed
+            or disable_rhui_lb_plugin.changed
+          register: disable_all_repos
+
+        - name: Update cloud-config to preserve hostname
+          lineinfile:
+            dest: /etc/cloud/cloud.cfg
+            regexp: '^preserve_hostname'
+            line: 'preserve_hostname: true'
+      when: is_ec2 == "y"
+
+    - name: Register Red Hat system
+      redhat_subscription:
+        username: '{{ rhsm_username }}'
+        password: '{{ rhsm_password }}'
+        autosubscribe: no
+        state: present
+
+    - name: Get subscription status
+      command: 'subscription-manager status'
+      register: subscription_status
+      failed_when: false
+      changed_when: false
+
+    - name: Attach Red Hat subscription
+      command: 'subscription-manager attach --pool "{{ rhsm_pool }}"'
+      when: '"Overall Status: Current" not in subscription_status.stdout'
+      register: subscription_attach
+
+    - name: Disable all repos
+      command: 'subscription-manager repos --disable "*"'
+      when: subscription_attach.changed
+
+    - name: Get enabled repos
+      command: 'subscription-manager repos --list-enabled'
+      register: enabled_repos
+      changed_when: false
+
+    - name: Enable required repos (<3.5)
+      command: 'subscription-manager repos --enable "{{ item }}"'
+      when: 'ocp_version < 3.5 and item not in enabled_repos.stdout'
+      with_items:
+        - rhel-7-server-rpms
+        - rhel-7-server-extras-rpms
+        - rhel-7-server-ose-{{ ocp_version }}-rpms
+
+    - name: Enable required repos (>=3.5)
+      command: 'subscription-manager repos --enable "{{ item }}"'
+      when: 'ocp_version >= 3.5 and item not in enabled_repos.stdout'
+      with_items:
+        - rhel-7-server-rpms
+        - rhel-7-server-extras-rpms
+        - rhel-7-server-ose-{{ ocp_version }}-rpms
+        - rhel-7-fast-datapath-rpms
+
+    - name: Install required packages
+      yum:
+        name: '{{ item }}'
+        state: present
+      with_items:
+        - wget
+        - git
+        - net-tools
+        - bind-utils
+        - iptables-services
+        - bridge-utils
+        - bash-completion
+        - kexec-tools
+        - sos
+        - psacct
+        - atomic-openshift-utils
+
+    - name: Install preferred packages
+      yum:
+        name: '{{ item }}'
+        state: present
+      with_items:
+        - vim
+
+    - name: Update all packages
+      yum:
+        name: '*'
+        state: latest
+
+    - name: Install additional packages (<3.6)
+      yum:
+        name: '{{ item }}'
+        state: present
+      with_items:
+        - atomic-openshift-excluder
+        - atomic-openshift-docker-excluder
+      when: 'ocp_version < 3.6'
+
+    - name: Install additional packages (>=3.6)
+      yum:
+        name: '{{ item }}'
+        state: present
+      with_items:
+        - atomic
+        - docker-1.12.6
+      when: 'ocp_version >= 3.6'
