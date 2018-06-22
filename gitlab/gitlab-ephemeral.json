@@ -4,9 +4,9 @@
   "metadata": {
     "name": "gitlab-ce",
     "annotations": {
-      "iconClass": "fa fa-git",
+      "iconClass": "icon-gitlab",
       "description": "GitLab. Collaboration and source control management: code, test, and deploy together! \n\n GitLab requries that the serviceaccount for the main GitLab app be added to the anyuid security context. The service account name is: <application name>-user",
-      "tags": "instant-app,gitlab,VCS"
+      "tags": "instant-app,gitlab,VCS,ci-cd"
     }
   },
   "labels": {
@@ -62,28 +62,11 @@
       "required": true
     },
     {
-      "description": "Volume size for /etc",
-      "displayName": "/etc/gitlab volume size",
-      "name": "ETC_VOL_SIZE",
-      "value": "100Mi"
-    },
-    {
-      "description": "Volume size for GitLab data",
-      "displayName": "GitLab data volume size",
-      "name": "GITLAB_DATA_VOL_SIZE",
-      "value": "5Gi"
-    },
-    {
-      "description": "Volume size for postgresql data",
-      "displayName": "postgresql volume size",
-      "name": "POSTGRESQL_VOL_SIZE",
-      "value": "2Gi"
-    },
-    {
-      "description": "Volume size for redis data",
-      "displayName": "redis volume size",
-      "name": "REDIS_VOL_SIZE",
-      "value": "512Mi"
+      "name": "UNICORN_WORKERS",
+      "displayName": "Number of Unicorn Workers",
+      "description": "Number of Unicorn Workers to use per instance. Must be at least 2.",
+      "value": "2",
+      "required": true
     }
   ],
   "objects": [
@@ -99,10 +82,10 @@
       "spec": {
         "tags": [
           {
-            "name": "gitlab-8.16.1",
+            "name": "gitlab-11.0.0",
             "from": {
               "kind": "DockerImage",
-              "name": "gitlab/gitlab-ce:8.16.1-ce.0"
+              "name": "gitlab/gitlab-ce:11.0.0-ce.0"
             }
           }
         ]
@@ -164,7 +147,7 @@
               ],
               "from": {
                 "kind": "ImageStreamTag",
-                "name": "${APPLICATION_NAME}:gitlab-8.16.1"
+                "name": "${APPLICATION_NAME}:gitlab-11.0.0"
               }
             }
           }
@@ -186,15 +169,11 @@
             "volumes": [
               {
                 "name": "gitlab-ce-volume-1",
-                "persistentVolumeClaim": {
-                  "claimName": "${APPLICATION_NAME}-etc"
-                }
+                "emptyDir": {}
               },
               {
                 "name": "gitlab-ce-volume-2",
-                "persistentVolumeClaim": {
-                  "claimName": "${APPLICATION_NAME}-data"
-                }
+                "emptyDir": {}
               }
             ],
             "containers": [
@@ -214,7 +193,7 @@
                 "env": [
                   {
                     "name": "GITLAB_OMNIBUS_CONFIG",
-                    "value": "hostname='${APPLICATION_HOSTNAME}'; external_url \"http://#{hostname}/\" unless hostname.to_s == ''; root_pass='${GITLAB_ROOT_PASSWORD}'; gitlab_rails['initial_root_password']=root_pass unless root_pass.to_s == ''; postgresql['enable']=false; gitlab_rails['db_host'] = '${APPLICATION_NAME}-postgresql'; gitlab_rails['db_password']='${POSTGRESQL_PASSWORD}'; gitlab_rails['db_username']='${POSTGRESQL_USER}'; gitlab_rails['db_database']='${POSTGRESQL_DATABASE}'; redis['enable'] = false; gitlab_rails['redis_host']='${APPLICATION_NAME}-redis'; unicorn['worker_processes'] = 2; manage_accounts['enable'] = true; manage_storage_directories['manage_etc'] = false; gitlab_shell['auth_file'] = '/gitlab-data/ssh/authorized_keys'; git_data_dir '/gitlab-data/git-data'; gitlab_rails['shared_path'] = '/gitlab-data/shared'; gitlab_rails['uploads_directory'] = '/gitlab-data/uploads'; gitlab_ci['builds_directory'] = '/gitlab-data/builds';"
+                    "value": "hostname='${APPLICATION_HOSTNAME}'; external_url \"http://#{hostname}/\" unless hostname.to_s == ''; root_pass='${GITLAB_ROOT_PASSWORD}'; gitlab_rails['initial_root_password']=root_pass unless root_pass.to_s == ''; postgresql['enable']=false; gitlab_rails['db_host'] = '${APPLICATION_NAME}-postgresql'; gitlab_rails['db_password']='${POSTGRESQL_PASSWORD}'; gitlab_rails['db_username']='${POSTGRESQL_USER}'; gitlab_rails['db_database']='${POSTGRESQL_DATABASE}'; redis['enable'] = false; gitlab_rails['redis_host']='${APPLICATION_NAME}-redis'; unicorn['worker_processes'] = ${UNICORN_WORKERS}; manage_accounts['enable'] = true; manage_storage_directories['manage_etc'] = false; gitlab_shell['auth_file'] = '/gitlab-data/ssh/authorized_keys'; git_data_dirs({ 'default' => { 'path' => '/gitlab-data/git-data' } }); gitlab_rails['shared_path'] = '/gitlab-data/shared'; gitlab_rails['uploads_directory'] = '/gitlab-data/uploads'; gitlab_ci['builds_directory'] = '/gitlab-data/builds'; prometheus_monitoring['enable'] = false;"
                   }
                 ],
                 "resources": {
@@ -323,9 +302,7 @@
             "volumes": [
               {
                 "name": "gitlab-ce-volume-4",
-                "persistentVolumeClaim": {
-                  "claimName": "${APPLICATION_NAME}-redis-data"
-                }
+                "emptyDir": {}
               }
             ],
             "containers": [
@@ -436,9 +413,7 @@
             "volumes": [
               {
                 "name": "gitlab-ce-volume-3",
-                "persistentVolumeClaim": {
-                  "claimName": "${APPLICATION_NAME}-postgresql"
-                }
+                "emptyDir": {}
               }
             ],
             "containers": [
@@ -489,8 +464,8 @@
                     "memory": "512Mi"
                   },
                   "requests": {
-                    "cpu": "300m",
-                    "memory": "300Mi"
+                    "cpu": "1",
+                    "memory": "512Mi"
                   }
                 },
                 "volumeMounts": [
@@ -594,74 +569,6 @@
          "sessionAffinity": "None"
        }
      },
-    {
-      "kind": "PersistentVolumeClaim",
-      "apiVersion": "v1",
-      "metadata": {
-        "name": "${APPLICATION_NAME}-redis-data"
-      },
-      "spec": {
-        "accessModes": [
-          "ReadWriteOnce"
-        ],
-        "resources": {
-          "requests": {
-            "storage": "${REDIS_VOL_SIZE}"
-          }
-        }
-      }
-    },
-    {
-      "kind": "PersistentVolumeClaim",
-      "apiVersion": "v1",
-      "metadata": {
-        "name": "${APPLICATION_NAME}-etc"
-      },
-      "spec": {
-        "accessModes": [
-          "ReadWriteOnce"
-        ],
-        "resources": {
-          "requests": {
-            "storage": "${ETC_VOL_SIZE}"
-          }
-        }
-      }
-    },
-    {
-      "kind": "PersistentVolumeClaim",
-      "apiVersion": "v1",
-      "metadata": {
-        "name": "${APPLICATION_NAME}-data"
-      },
-      "spec": {
-        "accessModes": [
-          "ReadWriteOnce"
-        ],
-        "resources": {
-          "requests": {
-            "storage": "${GITLAB_DATA_VOL_SIZE}"
-          }
-        }
-      }
-    },
-    {
-      "kind": "PersistentVolumeClaim",
-      "apiVersion": "v1",
-      "metadata": {
-        "name": "${APPLICATION_NAME}-postgresql"
-      },
-      "spec": {
-        "accessModes": [
-          "ReadWriteOnce"
-        ],
-        "resources": {
-          "requests": {
-            "storage": "${POSTGRESQL_VOL_SIZE}"
-          }
-        }
-      }
-    },
     {
       "kind": "Route",
       "apiVersion": "v1",

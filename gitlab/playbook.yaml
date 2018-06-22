@@ -2,16 +2,20 @@
 
 - hosts: localhost
   connection: local
+  gather_facts: no
+
   tasks:
     - name: Check for GitLab project
-      command: oc get project {{ project_name }}
+      command: oc get project '{{ project_name }}'
       register: check_gitlab_project
       changed_when: no
       failed_when: no
 
     - name: Create project for GitLab
-      command: oc new-project {{ project_name }}
-      when: "check_gitlab_project.rc != 0 and 'not found' in check_gitlab_project.stderr"
+      command: oc new-project '{{ project_name }}'
+      when:
+        - check_gitlab_project.rc != 0
+        - "'not found' in check_gitlab_project.stderr"
 
     - name: Check if gitlab-ce-user has anyuid SCC
       command: oc get scc anyuid -o json
@@ -21,7 +25,7 @@
 
     - name: Give gitlab-ce-user anyuid SCC
       command: oc adm policy add-scc-to-user anyuid 'system:serviceaccount:{{ project_name }}:gitlab-ce-user'
-      when: "'system:serviceaccount:{{ project_name }}:gitlab-ce-user' not in check_anyuid_scc.stdout"
+      when: "['system', 'serviceaccount', project_name, 'gitlab-ce-user']|join(':') not in check_anyuid_scc.stdout"
 
     - name: Check for GitLab deployment
       command: oc get service gitlab-ce -n {{ project_name }}
@@ -31,7 +35,7 @@
 
     - name: Deploy GitLab
       shell: >
-        oc process -f '{{ playbook_dir }}/gitlab-template.json'
+        oc process -f '{{ playbook_dir }}/gitlab-persistent.json'
         -v APPLICATION_HOSTNAME={{ hostname }}
         -v GITLAB_ROOT_PASSWORD='redhat1!'
         | oc create -f - -n {{ project_name }}
