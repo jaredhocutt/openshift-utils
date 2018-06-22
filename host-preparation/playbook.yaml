@@ -1,7 +1,6 @@
 ---
 
 - hosts: all
-  become: yes
 
   vars_prompt:
     - name: rhsm_username
@@ -10,147 +9,162 @@
       private: yes
     - name: rhsm_pool
       private: no
-    - name: ocp_version
+    - name: openshift_version
       private: no
     - name: is_ec2
       private: no
       default: n
 
+  vars:
+    openshift_repos:
+      - rhel-7-server-rpms
+      - rhel-7-server-extras-rpms
+      - rhel-7-server-ose-{{ openshift_version }}-rpms
+      - rhel-7-fast-datapath-rpms
+      - rhel-7-server-ansible-2.4-rpms
+
   tasks:
     - block:
-        - name: Enable subscription-manager YUM plugin
-          lineinfile:
-            dest: /etc/yum/pluginconf.d/subscription-manager.conf
-            regexp: '^enabled='
-            line: 'enabled=1'
-          register: enable_subscription_manager_plugin
-
         - name: Disable amazon-id YUM plugin
           lineinfile:
             dest: /etc/yum/pluginconf.d/amazon-id.conf
-            regexp: '^enabled='
-            line: 'enabled=0'
-          register: disable_amazon_id_plugin
+            regexp: "^enabled="
+            line: "enabled=0"
+          register: disable_plugin_amazon_id
+          become: yes
 
         - name: Disable rhui-lb YUM plugin
           lineinfile:
             dest: /etc/yum/pluginconf.d/rhui-lb.conf
-            regexp: '^enabled='
-            line: 'enabled=0'
-          register: disable_rhui_lb_plugin
+            regexp: "^enabled="
+            line: "enabled=0"
+          register: disable_plugin_rhui_lb
+          become: yes
 
         - name: Stop choose_repo service
           service:
             name: choose_repo
             state: stopped
+          become: yes
 
         - name: Disable choose_repo service
           service:
             name: choose_repo
             enabled: no
+          become: yes
 
         - name: Disable all repos
-          command: 'yum-config-manager --disable \*'
+          command: "yum-config-manager --disable '*'"
           when: >
-            enable_subscription_manager_plugin.changed
-            or disable_amazon_id_plugin.changed
-            or disable_rhui_lb_plugin.changed
+            disable_plugin_amazon_id.changed
+            or disable_plugin_rhui_lb.changed
           register: disable_all_repos
-
-        - name: Update cloud-config to preserve hostname
-          lineinfile:
-            dest: /etc/cloud/cloud.cfg
-            regexp: '^preserve_hostname'
-            line: 'preserve_hostname: true'
+          become: yes
       when: is_ec2 == "y"
 
-    - name: Register Red Hat system
+    - name: Register host to RHSM and attach pool
       redhat_subscription:
-        username: '{{ rhsm_username }}'
-        password: '{{ rhsm_password }}'
-        autosubscribe: no
+        username: "{{ rhsm_username }}"
+        password: "{{ rhsm_password }}"
+        pool_ids: "{{ rhsm_pool }}"
+        consumer_name: "{{ rhsm_consumer_name | default(omit) }}"
         state: present
+      become: yes
 
-    - name: Get subscription status
-      command: 'subscription-manager status'
-      register: subscription_status
-      failed_when: false
-      changed_when: false
+    - name: Enable required repositories
+      rhsm_repository:
+        name: "{{ openshift_repos }}"
+        state: enabled
+      register: openshift_enable_repos
+      become: yes
 
-    - name: Attach Red Hat subscription
-      command: 'subscription-manager attach --pool "{{ rhsm_pool }}"'
-      when: '"Overall Status: Current" not in subscription_status.stdout'
-      register: subscription_attach
-
-    - name: Disable all repos
-      command: 'subscription-manager repos --disable "*"'
-      when: subscription_attach.changed
-
-    - name: Get enabled repos
-      command: 'subscription-manager repos --list-enabled'
-      register: enabled_repos
-      changed_when: false
-
-    - name: Enable required repos (<3.5)
-      command: 'subscription-manager repos --enable "{{ item }}"'
-      when: 'ocp_version < 3.5 and item not in enabled_repos.stdout'
-      with_items:
-        - rhel-7-server-rpms
-        - rhel-7-server-extras-rpms
-        - rhel-7-server-ose-{{ ocp_version }}-rpms
-
-    - name: Enable required repos (>=3.5)
-      command: 'subscription-manager repos --enable "{{ item }}"'
-      when: 'ocp_version >= 3.5 and item not in enabled_repos.stdout'
-      with_items:
-        - rhel-7-server-rpms
-        - rhel-7-server-extras-rpms
-        - rhel-7-server-ose-{{ ocp_version }}-rpms
-        - rhel-7-fast-datapath-rpms
-
-    - name: Install required packages
-      yum:
-        name: '{{ item }}'
-        state: present
-      with_items:
-        - wget
-        - git
-        - net-tools
-        - bind-utils
-        - iptables-services
-        - bridge-utils
-        - bash-completion
-        - kexec-tools
-        - sos
-        - psacct
-        - atomic-openshift-utils
-
-    - name: Install preferred packages
-      yum:
-        name: '{{ item }}'
-        state: present
-      with_items:
-        - vim
+    - name: Disable non-required repositories
+      rhsm_repository:
+        name: "{{
+          openshift_enable_repos.repositories |
+          map(attribute='id') |
+          difference(openshift_repos) }}"
+        state: disabled
+      become: yes
 
     - name: Update all packages
       yum:
-        name: '*'
+        name: "*"
         state: latest
+      retries: 3  # This seems to fail sometimes, so lets retry before failing everything
+      until: update_all_packages.rc == 0
+      register: update_all_packages
+      become: yes
 
-    - name: Install additional packages (<3.6)
+    # There is a current bug with DNSmasq causing things to fail during an
+    # OpenShift install. Installing/upgrading and then rebooting the nodes is
+    # the current workaround.
+    - name: Install/upgrade dnsmasq
       yum:
-        name: '{{ item }}'
-        state: present
-      with_items:
-        - atomic-openshift-excluder
-        - atomic-openshift-docker-excluder
-      when: 'ocp_version < 3.6'
+        name: dnsmasq
+        state: latest
+      register: install_update_dnsmasq
+      become: yes
 
-    - name: Install additional packages (>=3.6)
+    - block:
+        - name: Reboot host
+          shell: sleep 30 && shutdown -r now
+          async: 30
+          poll: 0
+          ignore_errors: yes
+          become: yes
+
+        - name: Wait for nodes to boot
+          wait_for:
+            host: "{{ ansible_host }}"
+            port: 22
+            delay: 30
+            timeout: 300
+            search_regex: OpenSSH
+          delegate_to: "{{ (groups.openshift_role_bastion | intersect(groups['openshift_cluster_' + cluster_name]))[0] }}"
+      when: >-
+        install_update_dnsmasq.changed
+        or 'kernel' in update_all_packages.results
+
+    - name: Install required packages
       yum:
-        name: '{{ item }}'
+        name:
+          - atomic-openshift-utils
         state: present
-      with_items:
-        - atomic
-        - docker-1.12.6
-      when: 'ocp_version >= 3.6'
+      become: yes
+
+    - name: Install preferred packages
+      yum:
+        name:
+          - vim
+          - screen
+        state: present
+      become: yes
+
+    - name: Install Docker
+      yum:
+        name: docker-1.13.1  # TODO: Make this a varible based on openshift_version
+        state: present
+      become: yes
+
+    - name: Write docker-storage-setup file
+      template:
+        src: docker-storage-setup.j2
+        dest: /etc/sysconfig/docker-storage-setup
+        owner: root
+        group: root
+        mode: 0644
+      register: write_docker_storage_setup_file
+      become: yes
+
+    - name: Run docker-storage-setup
+      command: docker-storage-setup
+      when: write_docker_storage_setup_file.changed
+      become: yes
+
+    - name: Start and enable docker
+      service:
+        name: docker
+        enabled: yes
+        state: started
+      become: yes
