@@ -6,13 +6,13 @@
 
   tasks:
     - name: Check for GitLab project
-      command: oc get project '{{ project_name }}'
+      command: oc get project {{ project_name }}
       register: check_gitlab_project
       changed_when: no
       failed_when: no
 
     - name: Create project for GitLab
-      command: oc new-project '{{ project_name }}'
+      command: oc new-project {{ project_name }}
       when:
         - check_gitlab_project.rc != 0
         - "'not found' in check_gitlab_project.stderr"

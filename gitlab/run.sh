@@ -40,4 +40,4 @@ done
 GITLAB_PROJECT=$1
 GITLAB_HOSTNAME=$2
 
-ansible-playbook -i 127.0.0.1 -e project_name=${GITLAB_PROJECT} -e hostname=${GITLAB_HOSTNAME} playbook.yaml -v
+ansible-playbook -i 127.0.0.1 -e project_name=${GITLAB_PROJECT} -e hostname=${GITLAB_HOSTNAME} playbook.yml -v
